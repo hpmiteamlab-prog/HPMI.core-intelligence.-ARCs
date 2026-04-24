@@ -1,0 +1,610 @@
+
+from future import annotations
+
+import copy import heapq import math import random from collections import Counter, defaultdict, deque from dataclasses import dataclass from enum import Enum from typing import Any, Callable, Dict, List, Optional, Sequence, Tuple
+
+============================================================
+
+HPMI V1 → V100 CLEAN ARCHITECTURE
+
+Focus: abstraction, analogy, symbolic reasoning, guided search
+
+============================================================
+
+Grid = List[List[int]] Rule = Tuple[Any, ...] Program = List[Rule]
+
+============================================================
+
+VERSION CONFIG
+
+============================================================
+
+@dataclass(frozen=True) class VersionConfig: version: int search_depth: int = 2 beam_width: int = 16 use_analogical_recall: bool = False use_scene_graph: bool = False use_recursive_synthesis: bool = False use_conditionals: bool = False use_operator_invention: bool = False use_reflection: bool = False use_program_simplification: bool = False use_pruning: bool = True
+
+@staticmethod
+def for_version(version: int) -> "VersionConfig":
+version = max(1, min(100, version))
+return VersionConfig(
+version=version,
+search_depth=2 if version < 20 else 3 if version < 45 else 4 if version < 75 else 5,
+beam_width=8 if version < 20 else 12 if version < 45 else 16 if version < 75 else 24,
+use_analogical_recall=version >= 35,
+use_scene_graph=version >= 45,
+use_recursive_synthesis=version >= 55,
+use_conditionals=version >= 60,
+use_operator_invention=version >= 70,
+use_reflection=version >= 80,
+use_program_simplification=version >= 90,
+use_pruning=True,
+)
+
+============================================================
+
+TYPES
+
+============================================================
+
+class ObjType(Enum): GRID = "grid" OBJECT = "object" COLOR = "color" INT = "int" BOOL = "bool"
+
+@dataclass class Symbol: name: str type: ObjType value: Any = None
+
+@dataclass class SceneObject: id: int pixels: List[Tuple[int, int, int]] color: int size: int center: Tuple[float, float] bbox: Tuple[int, int, int, int]
+
+============================================================
+
+MEMORY
+
+============================================================
+
+class Memory: def init(self): self.task_signatures: List[str] = [] self.programs: List[Program] = [] self.scores: List[float] = [] self.rule_stats: Dict[Rule, Dict[str, int]] = defaultdict(lambda: {"success": 0, "fail": 0})
+
+@staticmethod
+def _similarity(a: str, b: str) -> float:
+pa = a.split("|")
+pb = b.split("|")
+if not pa or not pb:
+return 0.0
+return sum(1 for x, y in zip(pa, pb) if x == y) / max(len(pa), len(pb))
+
+def store(self, signature: str, program: Program, score: float) -> None:
+self.task_signatures.append(signature)
+self.programs.append(copy.deepcopy(program))
+self.scores.append(score)
+for rule in program:
+bucket = self.rule_stats[rule]
+if score > 0:
+bucket["success"] += 1
+else:
+bucket["fail"] += 1
+
+def confidence(self, rule: Rule) -> float:
+s = self.rule_stats[rule]["success"]
+f = self.rule_stats[rule]["fail"] + 1
+return s / f
+
+def recall(self, signature: str, threshold: float = 0.7, limit: int = 5) -> List[Program]:
+ranked: List[Tuple[float, Program]] = []
+for sig, prog in zip(self.task_signatures, self.programs):
+sim = self._similarity(signature, sig)
+if sim >= threshold:
+ranked.append((sim, copy.deepcopy(prog)))
+ranked.sort(reverse=True, key=lambda x: x[0])
+return [p for _, p in ranked[:limit]]
+
+============================================================
+
+GRID / OBJECT ENGINE
+
+============================================================
+
+class ObjectEngine: def objects(self, grid: Grid) -> List[List[Tuple[int, int, int]]]: visited = set() objects: List[List[Tuple[int, int, int]]] = []
+
+def bfs(sr: int, sc: int, color: int) -> List[Tuple[int, int, int]]:
+q = deque([(sr, sc)])
+cells: List[Tuple[int, int, int]] = []
+while q:
+r, c = q.popleft()
+if (r, c) in visited:
+continue
+if r < 0 or c < 0 or r >= len(grid) or c >= len(grid[0]):
+continue
+if grid[r][c] != color or color == 0:
+continue
+visited.add((r, c))
+cells.append((r, c, color))
+for dr, dc in ((1, 0), (-1, 0), (0, 1), (0, -1)):
+q.append((r + dr, c + dc))
+return cells
+
+for r in range(len(grid)):
+for c in range(len(grid[0])):
+if (r, c) not in visited and grid[r][c] != 0:
+obj = bfs(r, c, grid[r][c])
+if obj:
+objects.append(obj)
+return objects
+
+@staticmethod
+def center(obj: List[Tuple[int, int, int]]) -> Tuple[float, float]:
+return (
+sum(r for r, _, _ in obj) / len(obj),
+sum(c for _, c, _ in obj) / len(obj),
+)
+
+@staticmethod
+def bbox(obj: List[Tuple[int, int, int]]) -> Tuple[int, int, int, int]:
+rows = [r for r, _, _ in obj]
+cols = [c for _, c, _ in obj]
+return min(rows), min(cols), max(rows), max(cols)
+
+def shape_hash(self, obj: List[Tuple[int, int, int]]) -> Tuple[Tuple[int, int], ...]:
+r0, c0, _, _ = self.bbox(obj)
+return tuple(sorted((r - r0, c - c0) for r, c, _ in obj))
+
+def scene_objects(self, grid: Grid) -> List[SceneObject]:
+objs = self.objects(grid)
+out: List[SceneObject] = []
+for i, obj in enumerate(objs):
+out.append(
+SceneObject(
+id=i,
+pixels=obj,
+color=obj[0][2],
+size=len(obj),
+center=self.center(obj),
+bbox=self.bbox(obj),
+)
+)
+return out
+
+============================================================
+
+SCENE GRAPH / RELATIONAL REASONING
+
+============================================================
+
+class SceneGraph: def init(self, objects: List[SceneObject]): self.objects = objects self.edges: List[Tuple[int, int, Tuple[str, ...]]] = [] self._build()
+
+def _build(self) -> None:
+for a in self.objects:
+for b in self.objects:
+if a.id == b.id:
+continue
+rel = []
+if a.center[1] < b.center[1]:
+rel.append("LEFT_OF")
+if a.center[1] > b.center[1]:
+rel.append("RIGHT_OF")
+if a.center[0] < b.center[0]:
+rel.append("ABOVE")
+if a.center[0] > b.center[0]:
+rel.append("BELOW")
+if a.color == b.color:
+rel.append("SAME_COLOR")
+if a.bbox == b.bbox:
+rel.append("SAME_SHAPE")
+self.edges.append((a.id, b.id, tuple(rel)))
+
+def relation_summary(self) -> Dict[str, int]:
+counts = Counter()
+for _, _, rel in self.edges:
+for r in rel:
+counts[r] += 1
+return dict(counts)
+
+============================================================
+
+EXECUTOR
+
+============================================================
+
+class Executor: def apply(self, rule: Rule, grid: Grid) -> Grid: if not rule: return copy.deepcopy(grid)
+
+op = rule[0]
+
+if op == "MOVE":
+return self._move(grid, rule[1], rule[2])
+if op == "RECOLOR":
+return self._recolor(grid, rule[1], rule[2])
+if op == "ROTATE":
+return self._rotate(grid, rule[1])
+if op == "FLIP":
+return self._flip(grid, rule[1])
+if op == "SCALE":
+return self._scale(grid, rule[1])
+if op == "IF_SIZE_GT":
+threshold, subprogram = rule[1], rule[2]
+size = sum(cell != 0 for row in grid for cell in row)
+return self.run(subprogram, grid) if size > threshold else grid
+if op == "LOOP":
+times, subprogram = rule[1], rule[2]
+out = copy.deepcopy(grid)
+for _ in range(times):
+out = self.run(subprogram, out)
+return out
+return copy.deepcopy(grid)
+
+def run(self, program: Program, grid: Grid) -> Grid:
+out = copy.deepcopy(grid)
+for rule in program:
+out = self.apply(rule, out)
+return out
+
+def _move(self, grid: Grid, dr: int, dc: int) -> Grid:
+h, w = len(grid), len(grid[0])
+out = [[0] * w for _ in range(h)]
+for r in range(h):
+for c in range(w):
+nr, nc = r + dr, c + dc
+if 0 <= nr < h and 0 <= nc < w:
+out[nr][nc] = grid[r][c]
+return out
+
+def _recolor(self, grid: Grid, old: int, new: int) -> Grid:
+return [[new if x == old else x for x in row] for row in grid]
+
+def _rotate(self, grid: Grid, deg: int) -> Grid:
+if deg == 90:
+return [list(row) for row in zip(*grid[::-1])]
+if deg == 180:
+return [row[::-1] for row in grid[::-1]]
+if deg == 270:
+return [list(row) for row in zip(*grid)][::-1]
+return copy.deepcopy(grid)
+
+def _flip(self, grid: Grid, axis: str) -> Grid:
+if axis == "H":
+return [row[::-1] for row in grid]
+if axis == "V":
+return grid[::-1]
+return copy.deepcopy(grid)
+
+def _scale(self, grid: Grid, factor: int) -> Grid:
+if factor <= 1:
+return copy.deepcopy(grid)
+h, w = len(grid), len(grid[0])
+out = [[0] * (w * factor) for _ in range(h * factor)]
+for r in range(h):
+for c in range(w):
+for dr in range(factor):
+for dc in range(factor):
+out[r * factor + dr][c * factor + dc] = grid[r][c]
+return out
+
+============================================================
+
+RULE INFERENCE
+
+============================================================
+
+class RuleInference: def infer(self, examples: List[Tuple[Grid, Grid]], obj_engine: ObjectEngine) -> List[Tuple[Rule, int]]: candidates: List[Rule] = []
+
+for inp, out in examples:
+in_objs = obj_engine.objects(inp)
+out_objs = obj_engine.objects(out)
+
+if in_objs and out_objs:
+c1 = obj_engine.center(in_objs[0])
+c2 = obj_engine.center(out_objs[0])
+dr = round(c2[0] - c1[0])
+dc = round(c2[1] - c1[1])
+if dr or dc:
+candidates.append(("MOVE", dr, dc))
+
+old = in_objs[0][0][2]
+new = out_objs[0][0][2]
+if old != new:
+candidates.append(("RECOLOR", old, new))
+
+if self._rot(inp, out, 90):
+candidates.append(("ROTATE", 90))
+if self._rot(inp, out, 180):
+candidates.append(("ROTATE", 180))
+if self._rot(inp, out, 270):
+candidates.append(("ROTATE", 270))
+
+if self._flip(inp, out, "H"):
+candidates.append(("FLIP", "H"))
+if self._flip(inp, out, "V"):
+candidates.append(("FLIP", "V"))
+
+if len(out) == len(inp) * 2 and len(out[0]) == len(inp[0]) * 2:
+candidates.append(("SCALE", 2))
+
+if not candidates:
+return [("IDENTITY",), 1]
+
+return Counter(candidates).most_common(6)
+
+@staticmethod
+def _rot(a: Grid, b: Grid, deg: int) -> bool:
+if deg == 90:
+return [list(row) for row in zip(*a[::-1])] == b
+if deg == 180:
+return [row[::-1] for row in a[::-1]] == b
+if deg == 270:
+return [list(row) for row in zip(*a)][::-1] == b
+return False
+
+@staticmethod
+def _flip(a: Grid, b: Grid, axis: str) -> bool:
+if axis == "H":
+return [row[::-1] for row in a] == b
+if axis == "V":
+return a[::-1] == b
+return False
+
+============================================================
+
+DEEP ABSTRACTION
+
+============================================================
+
+class DeepAbstraction: def signature(self, examples: List[Tuple[Grid, Grid]]) -> str: parts = [] for inp, out in examples: parts.extend([ str(len(inp)), str(len(inp[0])), str(sum(cell for row in inp for cell in row)), str(len(out)), str(len(out[0])), str(sum(cell for row in out for cell in row)), ]) return "|".join(parts)
+
+def concept(self, examples: List[Tuple[Grid, Grid]]) -> str:
+first_in, first_out = examples[0]
+if len(first_in) != len(first_out):
+return "SIZE_CHANGE"
+if first_in != first_out:
+return "CONTENT_CHANGE"
+return "IDENTITY"
+
+============================================================
+
+ANALOGICAL REASONER
+
+============================================================
+
+class AnalogicalEngine: def init(self): self.memory = []
+
+def store(self, signature: str, program: Program) -> None:
+self.memory.append((signature, copy.deepcopy(program)))
+
+def find(self, signature: str) -> Optional[Program]:
+best_prog = None
+best_score = 0.0
+for sig, prog in self.memory:
+score = self._sim(signature, sig)
+if score > best_score:
+best_score = score
+best_prog = copy.deepcopy(prog)
+return best_prog if best_score > 0.65 else None
+
+@staticmethod
+def _sim(a: str, b: str) -> float:
+pa = a.split("|")
+pb = b.split("|")
+if not pa or not pb:
+return 0.0
+return sum(1 for x, y in zip(pa, pb) if x == y) / max(len(pa), len(pb))
+
+============================================================
+
+SYMBOLIC SYNTHESIS
+
+============================================================
+
+class SymbolicSynthesizer: def generate(self, rules: List[Tuple[Rule, int]], use_conditionals: bool) -> List[Program]: base_rules = [r for r, _ in rules] programs: List[Program] = []
+
+for r in base_rules:
+programs.append([r])
+
+for r1 in base_rules:
+for r2 in base_rules:
+programs.append([r1, r2])
+if use_conditionals:
+programs.append([("LOOP", 2, [r1])])
+programs.append([("IF_SIZE_GT", 3, [r2])])
+
+return programs
+
+============================================================
+
+RECURSIVE SYNTHESIS
+
+============================================================
+
+class RecursiveSynthesizer: def synthesize(self, programs: List[Program]) -> List[Program]: out: List[Program] = [] for prog in programs: if len(prog) >= 2: out.append([("LOOP", 2, prog[:1])]) out.append([("LOOP", 2, prog[:2])]) return out
+
+============================================================
+
+OPERATOR INVENTION
+
+============================================================
+
+class OperatorInventor: def invent(self, examples: List[Tuple[Grid, Grid]], obj_engine: ObjectEngine) -> List[Rule]: invented: List[Rule] = []
+
+for inp, out in examples:
+in_objs = obj_engine.objects(inp)
+out_objs = obj_engine.objects(out)
+
+if len(in_objs) == len(out_objs) and in_objs:
+invented.append(("ALIGN_OBJECTS",))
+
+if len(out_objs) > len(in_objs):
+invented.append(("OBJECT_SPLIT",))
+
+if len(out_objs) < len(in_objs):
+invented.append(("OBJECT_MERGE",))
+
+return list(dict.fromkeys(invented))
+
+============================================================
+
+REFLECTION
+
+============================================================
+
+class SelfReflection: def analyze(self, program: Program, examples: List[Tuple[Grid, Grid]], executor: Executor) -> str: shape_mismatch = False content_mismatch = False for inp, out in examples: try: res = executor.run(program, inp) if res != out: if len(res) != len(out) or len(res[0]) != len(out[0]): shape_mismatch = True else: content_mismatch = True except Exception: content_mismatch = True if not shape_mismatch and not content_mismatch: return "SUCCESS" if shape_mismatch: return "SHAPE_ERROR" if content_mismatch: return "CONTENT_ERROR" return "UNKNOWN"
+
+============================================================
+
+SEARCH
+
+============================================================
+
+class SmartSearch: def init(self, beam_width: int = 24, max_depth: int = 5, pruning: bool = True): self.beam_width = beam_width self.max_depth = max_depth self.pruning = pruning
+
+def score(self, program: Program, examples: List[Tuple[Grid, Grid]], executor: Executor) -> float:
+score = 0.0
+for inp, out in examples:
+try:
+res = executor.run(program, inp)
+if res == out:
+score += 1.0
+else:
+if len(res) == len(out) and len(res[0]) == len(out[0]):
+match = sum(
+res[r][c] == out[r][c]
+for r in range(len(out))
+for c in range(len(out[0]))
+)
+score += match / (len(out) * len(out[0])) * 0.5
+except Exception:
+pass
+return score
+
+def heuristic(self, program: Program, examples: List[Tuple[Grid, Grid]], executor: Executor) -> float:
+return self.score(program, examples, executor)
+
+def search(self, candidate_programs: List[Program], examples: List[Tuple[Grid, Grid]], executor: Executor) -> Program:
+if not candidate_programs:
+return [("IDENTITY",)]
+
+heap: List[Tuple[float, Program]] = []
+for prog in candidate_programs:
+h = self.heuristic(prog, examples, executor)
+heapq.heappush(heap, (-h, prog))
+
+seen = set()
+best_prog = candidate_programs[0]
+best_score = -1.0
+
+while heap and len(seen) < 1200:
+neg_h, prog = heapq.heappop(heap)
+key = str(prog)
+if key in seen:
+continue
+seen.add(key)
+
+s = self.score(prog, examples, executor)
+if s > best_score:
+best_score = s
+best_prog = prog
+
+if s >= len(examples):
+return prog
+
+if len(prog) < self.max_depth:
+for extra in candidate_programs[:self.beam_width]:
+new_prog = prog + extra
+if self.pruning and self.heuristic(new_prog, examples, executor) < 0.2:
+continue
+heapq.heappush(heap, (-self.heuristic(new_prog, examples, executor), new_prog))
+
+return best_prog
+
+============================================================
+
+V100+ CORE SYSTEM
+
+============================================================
+
+class HPMICore: def init(self, version: int = 100): self.config = VersionConfig.for_version(version) self.memory = Memory() self.obj = ObjectEngine() self.exec = Executor() self.infer = RuleInference() self.abstract = DeepAbstraction() self.analog = AnalogicalEngine() self.symbolic = SymbolicSynthesizer() self.recursive = RecursiveSynthesizer() self.inventor = OperatorInventor() if self.config.use_operator_invention else None self.reflect = SelfReflection() if self.config.use_reflection else None self.search = SmartSearch( beam_width=self.config.beam_width, max_depth=self.config.search_depth, pruning=self.config.use_pruning, )
+
+def solve(self, examples: List[Tuple[Grid, Grid]], test: Grid) -> Grid:
+if not examples:
+return copy.deepcopy(test)
+
+signature = self.abstract.signature(examples)
+concept = self.abstract.concept(examples)
+
+1. Analogical reuse
+
+
+
+reused = self.analog.find(signature) if self.config.use_analogical_recall else None
+if reused:
+return self.exec.run(reused, test)
+
+2. Infer base rules
+
+
+
+rules = self.infer.infer(examples, self.obj)
+
+3. Operator invention
+
+
+
+if self.config.use_operator_invention and self.inventor is not None:
+invented = self.inventor.invent(examples, self.obj)
+rules += [(op, 1) for op in invented]
+
+4. Symbolic expansion
+
+
+
+programs = self.symbolic.generate(rules, use_conditionals=self.config.use_conditionals)
+
+5. Recursive synthesis
+
+
+
+if self.config.use_recursive_synthesis:
+programs += self.recursive.synthesize(programs)
+
+6. Add conceptual bias
+
+
+
+if concept == "SIZE_CHANGE":
+programs = [[("SCALE", 2)]] + programs
+
+7. Search
+
+
+
+best = self.search.search(programs, examples, self.exec)
+
+8. Reflection loop
+
+
+
+if self.config.use_reflection and self.reflect is not None:
+verdict = self.reflect.analyze(best, examples, self.exec)
+if verdict != "SUCCESS":
+
+If repaired :
+program += repaired
+best = self search.search(
+program ,example,self.sxec)
+#9)Anology
+def store_analogical_success(core, signature: str, program, score: float):
+
+only store successful / useful solutions
+
+if score > 0:
+
+memo core.memory.store(signature, program, score)
+
+core.analog.store(signature, program
+core = HPMICore(version=100)
+
+examples = [
+([[1,0],[0,0]], [[0,1],[0,0]])
+]
+
+test = [[1,0],[0,0]]
+
+result = core.solve(examples, test)
+
+assume we got good score
+
+score = 1.0
+signature = core.abstract.signature(examples)
+
+store_analogical_success(core, signature, result, score)
+
+print(result)
