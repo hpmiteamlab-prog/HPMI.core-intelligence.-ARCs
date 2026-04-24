@@ -1,0 +1,185 @@
+# HPMI.core-intelligence.-ARCs
+HPMI (Human Protomodel Intelligence) – Modular AI reasoning system with layered architecture for advanced problem solving and ARC-style tasks.
+### remember 
+this is only hpmi core intelligence not whole system. the core of it includes many things , you can see below
+### reasoning 
+1. Perception Layer (Object Understanding)
+The system first converts raw grids into structured symbolic objects.
+Process:
+Connected component detection (BFS flood-fill)
+Object extraction from pixel space
+Feature encoding: size, color, centroid, bounding box
+Output:
+Structured object list
+Scene representation
+2. Abstraction Layer (Concept Formation)
+Transforms raw objects into higher-level concepts.
+Capabilities:
+Shape normalization
+Spatial encoding (relative positioning)
+Pattern compression into task signature
+Detected concepts:
+SIZE_CHANGE
+COLOR_TRANSFORM
+SYMMETRY
+SPATIAL_TRANSLATION
+ 3. Rule Inference Engine
+Generates candidate transformation rules from examples.
+Rule Types:
+MOVE(dr, dc)
+ROTATE(90/180/270)
+RECOLOR(a → b)
+SCALE(factor)
+FLIP(H / V)
+Mechanism:
+compares input vs output object geometry
+detects delta transformations
+votes across multiple examples
+ 4. Symbolic Program Synthesis
+Builds executable programs from inferred rules.
+Program structures:
+Sequential rules
+Conditional execution
+Loop-based transformations
+Example:
+Plain text
+[("MOVE", 1, 0), ("RECOLOR", 2, 3)]
+ 5. Search & Optimization Engine
+Explores possible programs using beam search.
+Features:
+heuristic scoring
+partial match evaluation
+pruning low-probability branches
+depth-limited exploration
+Goal: Find program P such that:
+
+P(input) ≈ output
+6. Memory & Analogy System
+Stores past successful solutions for reuse.
+Functions:
+Task signature encoding
+Program recall via similarity matching
+Analogical transfer learning
+Benefit: Speeds up solving similar unseen tasks.
+ 7. Reflection & Validation Layer
+Validates correctness of generated programs.
+Checks:
+Output equality
+Structural match
+Shape consistency
+Failure classification
+Errors detected:
+SHAPE_ERROR
+CONTENT_ERROR 
+
+Input Grid
+   ↓
+Object Engine
+   ↓
+Abstraction Layer
+   ↓
+Rule Inference
+   ↓
+Program Synthesis
+   ↓
+Search Optimization
+   ↓
+Validation
+   ↓
+Final Output Grid
+
+### more
+
+Adaptation System (Fast Learning Engine)
+The adaptation module allows HPMI to adjust its strategy based on task difficulty and failure patterns.
+Functions:
+Detects repeated failure types
+Adjusts search depth dynamically
+Changes beam width based on uncertainty
+Switches rule priorities automatically
+Behavior:
+Easy task → fast shallow reasoning
+Hard task → deep symbolic search
+Repeated error → strategy shift
+🔷 2. Intuition Layer (Heuristic Guessing Engine)
+Simulates “intuition” using compressed pattern recognition from past experience.
+Functions:
+Similarity-based shortcut reasoning
+Pattern compression memory
+Rapid candidate rule suggestion
+Effect:
+Reduces search space
+Improves first-guess accuracy
+Enables near-instant partial solutions
+🔷 3. Thinking Engine (Multi-Path Reasoning Core)
+Generates multiple competing hypotheses instead of a single logic path.
+Mechanism:
+Parallel rule generation
+Competing program candidates
+Ranking via scoring function
+Modes:
+Logical reasoning path
+Spatial reasoning path
+Symbolic transformation path
+🔷 4. Memory System (Long-Term Knowledge Store)
+Stores structured experience from solved tasks.
+Components:
+Task signatures
+Successful programs
+Failure patterns
+Rule confidence scores
+Capabilities:
+Retrieval of similar tasks
+Reuse of known solutions
+Confidence-based rule selection
+🔷 5. Meta-Control System (Self-Regulation Layer)
+Controls how all other modules behave.
+Responsibilities:
+Chooses reasoning depth
+Enables/disables modules dynamically
+Balances speed vs accuracy
+Detects overfitting behavior
+🔷 6. Abstraction Compression Layer
+Reduces raw grid complexity into minimal symbolic representation.
+Functions:
+Object merging
+Pattern simplification
+Structural encoding
+Feature reduction
+🔷 7. Failure Analysis System
+Learns from incorrect outputs.
+Detects:
+Missing rule types
+Wrong transformation assumptions
+Search failures
+Overgeneralization
+Output:
+Repair suggestions
+New operator creation hints
+🔷 8. Operator Evolution System
+Creates new transformation rules when existing ones fail.
+Examples:
+ALIGN_OBJECTS
+MIRROR_SHIFT
+OBJECT_SPLIT
+PATTERN_DUPLICATION
+🔷 9. Confidence Scoring System
+Assigns reliability score to every rule and program.
+Based on:
+Past success rate
+Task similarity
+Execution stability
+🔷 10. Hybrid Reasoning Core
+Combines all systems into one unified pipeline:
+Plain text
+Perception → Abstraction → Intuition → Rule Inference → Search → Memory → Reflection → Output
+
+### final summary 
+HPMI is a multi-layer symbolic reasoning system designed to solve ARC-style grid transformation tasks using:
+Object-based perception
+Rule inference from examples
+Symbolic program synthesis
+Beam search optimization
+Memory-based analogical recall
+Self-reflection and error correction
+The system does not rely on direct pattern matching. Instead, it constructs executable transformation programs that generalize across unseen tasks.
